@@ -1,4 +1,4 @@
-module cqm.log
+module log
 
 go 1.18
 
