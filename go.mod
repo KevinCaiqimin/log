@@ -1,4 +1,4 @@
-module log
+module github.com/KevinCaiqimin/log
 
 go 1.18
 
