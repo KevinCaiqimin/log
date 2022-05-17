@@ -1,18 +1,26 @@
 package log
 
+import (
+	"fmt"
+	"sync"
+)
+
 var instance *Logger
+var once sync.Once
 
 func InitLog(fileName, rollType string, logLevel int) error {
-	if instance != nil {
-		return nil
-	}
-	instance = &Logger{
-		fileName: fileName,
-		rollType: rollType,
-		logLevel: logLevel,
-	}
-	instance.init()
-	instance.run()
+	once.Do(func() {
+		if instance != nil {
+			return
+		}
+		instance = &Logger{
+			fileName: fileName,
+			rollType: rollType,
+			logLevel: logLevel,
+		}
+		instance.init()
+		instance.run()
+	})
 
 	return nil
 }
@@ -42,6 +50,10 @@ func Error(format string, a ...interface{}) {
 
 func Fatal(format string, a ...interface{}) {
 	getInstance().fatal(format, a...)
+}
+
+func StateInfo() string {
+	return fmt.Sprintf("chanel len=%d, buf_len=%d", len(getInstance().ch), getInstance().buf.Len())
 }
 
 func Quit() {

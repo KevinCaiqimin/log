@@ -2,6 +2,7 @@ package log
 
 import (
 	"bufio"
+	"bytes"
 	"fmt"
 	"os"
 	"path"
@@ -18,6 +19,7 @@ type Logger struct {
 
 	ch          chan *LogMsg
 	curFileName string
+	buf         *bytes.Buffer
 }
 
 const (
@@ -40,12 +42,13 @@ type LogMsg struct {
 }
 
 func (l *Logger) init() {
-	l.ch = make(chan *LogMsg, 10000)
+	l.ch = make(chan *LogMsg, 100000)
+	l.buf = bytes.NewBuffer([]byte{})
 }
 
-func (l *Logger) checkRolling(logTime time.Time) {
+func (l *Logger) checkRolling(logTime time.Time) bool {
 	if l.fileName == "console" {
-		return
+		return false
 	}
 	now := ""
 	if l.rollType == "DAY" {
@@ -53,7 +56,7 @@ func (l *Logger) checkRolling(logTime time.Time) {
 	} else if l.rollType == "HOUR" {
 		now = logTime.Format("2006-01-02T15")
 	} else {
-		return
+		return false
 	}
 
 	ext := path.Ext(l.fileName)
@@ -71,29 +74,29 @@ func (l *Logger) checkRolling(logTime time.Time) {
 		buf := bufio.NewReader(file)
 		lineBytes, _, err := buf.ReadLine()
 		if err != nil {
-			return
+			return false
 		}
 		if len(lineBytes) == 0 {
-			return
+			return false
 		}
 		line := string(lineBytes)
 		strs := strings.Split(line, " ")
 		if len(strs) <= 0 {
-			return
+			return false
 		}
 		datetime := strs[0]
 		hasPref := strings.HasPrefix(datetime, now)
 		if !hasPref {
 			closeErr := file.Close() //close first
 			if closeErr != nil {
-				fmt.Println(fmt.Sprintf("close file %v failed: %v\n", l.fileName, closeErr))
+				fmt.Printf("close file %v failed: %v\n", l.fileName, closeErr)
 			}
 			//rename
 			newFileName := pref + ext + "." + datetime[:len(now)]
 			renameResult := os.Rename(l.fileName, newFileName)
 			if renameResult != nil {
-				fmt.Println(fmt.Sprintf("initial rename file from %v to %v failed: %v\n",
-					l.fileName, newFileName, renameResult))
+				fmt.Printf("initial rename file from %v to %v failed: %v\n",
+					l.fileName, newFileName, renameResult)
 			}
 		}
 		l.curFileName = fn
@@ -102,11 +105,13 @@ func (l *Logger) checkRolling(logTime time.Time) {
 	if l.curFileName != fn {
 		renameResult := os.Rename(l.fileName, l.curFileName)
 		if renameResult != nil {
-			fmt.Println(fmt.Sprintf("it's time, but rename file from %v to %v failed: %v\n",
-				l.fileName, l.curFileName, renameResult))
+			fmt.Printf("it's time, but rename file from %v to %v failed: %v\n",
+				l.fileName, l.curFileName, renameResult)
 		}
 		l.curFileName = fn
+		return true
 	}
+	return false
 }
 
 func (l *Logger) getLogPref(curTime time.Time) string {
@@ -118,33 +123,50 @@ func (l *Logger) getLogPref(curTime time.Time) string {
 	return pref
 }
 
+func (l *Logger) saveBufferToFile() error {
+	if l.buf.Len() <= 0 {
+		return nil
+	}
+	data := l.buf.Bytes()
+	defer l.buf.Reset()
+
+	file, err := os.OpenFile(l.fileName, os.O_APPEND|os.O_RDWR|os.O_CREATE, 0755)
+	if err != nil {
+		fmt.Printf("open file %v failed %v\n", l.fileName, err)
+		return err
+	}
+	defer file.Close()
+	_, err = file.Write(data)
+	if err != nil {
+		fmt.Printf("write to file %v failed %v\n", l.fileName, err)
+		return err
+	}
+	return nil
+}
+
 func (l *Logger) run() {
+	buf := l.buf
 	go func() {
 		for {
-			msgData := <-l.ch
-
-			if msgData.msgType == MSG_QUIT {
-				os.Exit(1)
+			select {
+			case msgData := <-l.ch:
+				if msgData.msgType == MSG_QUIT {
+					l.saveBufferToFile()
+					os.Exit(1)
+				}
+				rolled := l.checkRolling(msgData.timestamp)
+				if rolled {
+					l.saveBufferToFile()
+				}
+				msg := msgData.msg
+				buf.WriteString(msg)
+				if buf.Len() >= 1024*1024 {
+					l.saveBufferToFile()
+				}
+			default:
+				l.saveBufferToFile()
+				time.Sleep(time.Millisecond * 100)
 			}
-			msg := msgData.msg
-
-			if l.fileName == "console" {
-				fmt.Printf(msg)
-				continue
-			}
-			l.checkRolling(msgData.timestamp)
-			file, err := os.OpenFile(l.fileName, os.O_APPEND|os.O_RDWR|os.O_CREATE, 0755)
-			if err != nil {
-				fmt.Println(fmt.Sprintf("open file %v failed %v", l.fileName, err))
-				continue
-			}
-			_, err = file.Write([]byte(msg))
-			if err != nil {
-				fmt.Println(fmt.Sprintf("write to file %v failed %v", l.fileName, err))
-				goto END
-			}
-		END:
-			file.Close()
 		}
 	}()
 }
